@@ -4,10 +4,13 @@
 //==============================================================================
 FantomFuzzAudioProcessor::FantomFuzzAudioProcessor()
      : AudioProcessor (BusesProperties()
-                        .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                         .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
        apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
+    for (int i = 0; i < numVoices; ++i)
+        synth.addVoice (new FuzzSynthVoice());
+
+    synth.addSound (new FuzzSynthSound());
 }
 
 FantomFuzzAudioProcessor::~FantomFuzzAudioProcessor() {}
@@ -31,11 +34,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout FantomFuzzAudioProcessor::cr
 
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         MIX_ID, "Mix",
-        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.8f));
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.9f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         OUTPUT_ID, "Output",
-        juce::NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f));
+        juce::NormalisableRange<float> (-24.0f, 12.0f, 0.1f), -6.0f));
 
     return { params.begin(), params.end() };
 }
@@ -45,12 +48,11 @@ void FantomFuzzAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
 {
     currentSampleRate = sampleRate;
 
-    // 4x oversampling, 2 channels, FIR polyphase (good alias rejection for fuzz)
+    synth.setCurrentPlaybackSampleRate (sampleRate);
+
     oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
         2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true);
     oversampler->initProcessing (static_cast<size_t> (samplesPerBlock));
-
-    juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (samplesPerBlock), 2 };
 
     preHighPassL.reset(); preHighPassR.reset();
     postLowShelfL.reset(); postLowShelfR.reset();
@@ -62,7 +64,6 @@ void FantomFuzzAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     smoothedOutput.reset (sampleRate, 0.02);
 
     updateFilters();
-    juce::ignoreUnused (spec);
 }
 
 void FantomFuzzAudioProcessor::releaseResources()
@@ -73,20 +74,16 @@ void FantomFuzzAudioProcessor::releaseResources()
 
 void FantomFuzzAudioProcessor::updateFilters()
 {
-    // Pre-fuzz high-pass ~80 Hz: stops low end from swamping the clipper
     auto hp = juce::dsp::IIR::Coefficients<float>::makeHighPass (currentSampleRate, 80.0f, 0.707f);
     *preHighPassL.coefficients = *hp;
     *preHighPassR.coefficients = *hp;
 
-    // Post low shelf: gentle cut around 300 Hz to remove "mud" the clipper adds
     auto lowShelf = juce::dsp::IIR::Coefficients<float>::makeLowShelf (currentSampleRate, 300.0f, 0.707f, 0.7f);
     *postLowShelfL.coefficients = *lowShelf;
     *postLowShelfR.coefficients = *lowShelf;
 
-    // Post presence bump ~3 kHz: gives the Fantom-style "cut through" edge.
-    // Tone parameter shifts the gain of this band +/- a few dB.
     float toneParam = apvts.getRawParameterValue (TONE_ID)->load();
-    float presenceGainDb = 3.0f + toneParam * 4.0f; // range roughly -1..+7 dB
+    float presenceGainDb = 3.0f + toneParam * 4.0f;
     auto presence = juce::dsp::IIR::Coefficients<float>::makePeakFilter (
         currentSampleRate, 3000.0f, 1.0f, juce::Decibels::decibelsToGain (presenceGainDb));
     *postPresenceL.coefficients = *presence;
@@ -95,16 +92,19 @@ void FantomFuzzAudioProcessor::updateFilters()
 
 bool FantomFuzzAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
-        && layouts.getMainInputChannelSet()  == juce::AudioChannelSet::stereo();
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
 //==============================================================================
-void FantomFuzzAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void FantomFuzzAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
 
     const int numSamples = buffer.getNumSamples();
+    buffer.clear();
+
+    // --- Generate synth voices from incoming MIDI ---
+    synth.renderNextBlock (buffer, midiMessages, 0, numSamples);
 
     // Pull current parameter values
     smoothedGain.setTargetValue (apvts.getRawParameterValue (GAIN_ID)->load());
@@ -113,9 +113,8 @@ void FantomFuzzAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     smoothedOutput.setTargetValue (
         juce::Decibels::decibelsToGain (apvts.getRawParameterValue (OUTPUT_ID)->load()));
 
-    updateFilters(); // cheap enough to call per block; tone can move live
+    updateFilters();
 
-    // Keep a dry copy for the mix stage
     juce::AudioBuffer<float> dryBuffer;
     dryBuffer.makeCopyOf (buffer);
 
@@ -206,7 +205,6 @@ void FantomFuzzAudioProcessor::setStateInformation (const void* data, int sizeIn
 }
 
 //==============================================================================
-// This creates new instances of the plugin
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new FantomFuzzAudioProcessor();
