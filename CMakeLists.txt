@@ -16,17 +16,17 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(FantomFuzz
-    COMPANY_NAME "YourCompany"
-    IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
+    COMPANY_NAME "KeSha"
+    IS_SYNTH TRUE
+    NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE Yrcm
-    PLUGIN_CODE Ffz1
+    PLUGIN_CODE Ffz2
     FORMATS VST3 Standalone
-    PRODUCT_NAME "Fantom Fuzz")
+    PRODUCT_NAME "Fantom Fuzz Synth")
 
 juce_generate_juce_header(FantomFuzz)
 
